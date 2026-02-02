@@ -1,0 +1,17 @@
+[package]
+name = "biorhythms"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+iced = { version = "0.13", features = ["canvas"] }
+chrono = { version = "0.4", features = ["serde"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[profile.release]
+opt-level = "z"     # Optimize for size ('z' is more aggressive than 's')
+lto = true          # Enable Link Time Optimization (huge impact)
+codegen-units = 1   # Reduces parallel compilation to allow better optimization
+panic = "abort"     # Removes stack unwinding code (saves ~10-15%)
+strip = true        # Automatically strips symbols/debug info (Rust 1.59+)
