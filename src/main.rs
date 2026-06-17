@@ -5,13 +5,15 @@ use iced::font::{Weight};
 use chrono::{NaiveDate, Utc, Duration, Datelike, Weekday};
 use serde::{Serialize, Deserialize};
 use std::fs;
+use std::path::PathBuf;
 use std::time::{Instant, Duration as StdDuration};
+use std::f64::consts::TAU; // 2.0 * PI
 
 pub fn main() -> iced::Result {
     iced::application("Biorhythm Pro Forecast", BiorhythmApp::update, BiorhythmApp::view)
-        .theme(|_| Theme::Dark)
-        .subscription(BiorhythmApp::subscription)
-        .run()
+    .theme(|_| Theme::Dark)
+    .subscription(BiorhythmApp::subscription)
+    .run()
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -37,6 +39,16 @@ struct BiorhythmApp {
     last_tick: Instant,
 }
 
+fn get_storage_path() -> PathBuf {
+    if let Some(home_str) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
+        let mut path = PathBuf::from(home_str);
+        path.push(".biorhythm_entries.json");
+        path
+    } else {
+        PathBuf::from("entries.json")
+    }
+}
+
 #[derive(Debug, Clone)]
 enum Message {
     NameChanged(String),
@@ -49,7 +61,6 @@ enum Message {
     FrameTick(Instant),
     ResetOffset,
     EventOccurred(Event),
-    MouseWheelScrolled(f32),
     GoToDate(i32),
 }
 
@@ -57,13 +68,18 @@ impl BiorhythmApp {
     fn update(&mut self, message: Message) {
         match message {
             Message::NameChanged(n) => self.name_input = n,
-            Message::DateChanged(d) => { self.date_input = d; self.chart_cache.clear(); },
+            Message::DateChanged(d) => {
+                self.date_input = d;
+                self.chart_cache.clear();
+            },
             Message::SaveEntry => {
                 if let Ok(date) = NaiveDate::parse_from_str(&self.date_input, "%Y-%m-%d") {
                     let entry = SavedEntry { name: self.name_input.clone(), date };
                     if !self.saved_entries.contains(&entry) {
                         self.saved_entries.push(entry);
-                        let _ = fs::write("entries.json", serde_json::to_string(&self.saved_entries).unwrap());
+                        if let Ok(json) = serde_json::to_string(&self.saved_entries) {
+                            let _ = fs::write(get_storage_path(), json);
+                        }
                     }
                 }
             },
@@ -73,7 +89,10 @@ impl BiorhythmApp {
                 self.selected_entry = Some(entry);
                 self.chart_cache.clear();
             },
-            Message::OffsetChanged(val) => { self.day_offset = val; self.chart_cache.clear(); },
+            Message::OffsetChanged(val) => {
+                self.day_offset = val;
+                self.chart_cache.clear();
+            },
             Message::ShiftOffset(delta) => {
                 self.day_offset = (self.day_offset + delta).clamp(-45830, 36525);
                 self.chart_cache.clear();
@@ -91,16 +110,14 @@ impl BiorhythmApp {
                     }
                 }
             },
-            Message::ResetOffset => { self.day_offset = 0; self.chart_cache.clear(); },
-            Message::MouseWheelScrolled(y) => {
-                let delta = if y > 0.0 { -1 } else { 1 };
-                self.day_offset = (self.day_offset + delta).clamp(-45830, 36525);
+            Message::ResetOffset => {
+                self.day_offset = 0;
                 self.chart_cache.clear();
             },
             Message::GoToDate(offset) => {
                 self.day_offset = offset;
                 self.chart_cache.clear();
-            }
+            },
             Message::EventOccurred(event) => {
                 match event {
                     Event::Mouse(mouse::Event::WheelScrolled { delta }) => {
@@ -108,7 +125,9 @@ impl BiorhythmApp {
                             mouse::ScrollDelta::Lines { y, .. } => y,
                             mouse::ScrollDelta::Pixels { y, .. } => y.signum(),
                         };
-                        self.update(Message::MouseWheelScrolled(y));
+                        let delta = if y > 0.0 { -1 } else { 1 };
+                        self.day_offset = (self.day_offset + delta).clamp(-45830, 36525);
+                        self.chart_cache.clear();
                     }
                     Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
                         self.rolling_direction = None;
@@ -151,23 +170,19 @@ impl BiorhythmApp {
 
         let sidebar = self.build_analysis_sidebar();
 
-        // The header row containing "Critical Days" and the Year aligned with the center of the chart
         let chart_header = row![
-            // This container effectively mimics the chart's width and padding
-            // to place the year in the absolute center of the chart area.
             container(
                 text(target_year)
-                    .size(20)
-                    .font(Font { weight: Weight::Bold, ..Font::DEFAULT })
+                .size(20)
+                .font(Font { weight: Weight::Bold, ..Font::DEFAULT })
             )
             .width(Length::FillPortion(5))
             .align_x(alignment::Horizontal::Center),
 
-            // This container matches the sidebar title "Critical Days"
             container(
                 text("Critical Days")
-                    .size(20)
-                    .font(Font { weight: Weight::Bold, ..Font::DEFAULT })
+                .size(20)
+                .font(Font { weight: Weight::Bold, ..Font::DEFAULT })
             )
             .width(Length::FillPortion(1))
         ].spacing(20);
@@ -179,15 +194,15 @@ impl BiorhythmApp {
             row![
                 column![
                     Canvas::new(self).width(Length::Fill).height(Length::Fill),
-                    row![
-                        text(format!("Timeline Offset: {} days", self.day_offset)).size(14),
-                        horizontal_space(),
-                        text("Physical").color(Color::from_rgb8(255, 80, 80)),
-                        text("Emotional").color(Color::from_rgb8(80, 255, 80)),
-                        text("Intellectual").color(Color::from_rgb8(80, 80, 255)),
-                    ].spacing(20)
+                  row![
+                      text(format!("Timeline Offset: {} days", self.day_offset)).size(14),
+                  horizontal_space(),
+                  text("Physical").color(Color::from_rgb8(255, 80, 80)),
+                  text("Emotional").color(Color::from_rgb8(80, 255, 80)),
+                  text("Intellectual").color(Color::from_rgb8(80, 80, 255)),
+                  ].spacing(20)
                 ].width(Length::FillPortion(5)).spacing(10),
-                sidebar.width(Length::FillPortion(1))
+                  sidebar.width(Length::FillPortion(1))
             ].spacing(20).height(Length::Fill)
         ].spacing(15).padding(30)).into()
     }
@@ -199,16 +214,18 @@ impl BiorhythmApp {
 
         if let Ok(birthday) = NaiveDate::parse_from_str(&self.date_input, "%Y-%m-%d") {
             let today = Utc::now().naive_utc().date();
-            let mut items = Vec::new();
+            let mut items = Vec::with_capacity(30);
+
+            let cycles = [(23.0, "P"), (28.0, "E"), (33.0, "I")];
 
             for i in (self.day_offset - 5)..(self.day_offset + 25) {
                 let date = today + Duration::days(i as i64);
                 let days_since = date.signed_duration_since(birthday).num_days() as f64;
 
                 let mut active_crit = Vec::new();
-                for (period, name) in [(23.0, "P"), (28.0, "E"), (33.0, "I")] {
-                    let val_now = ((2.0 * std::f64::consts::PI * days_since) / period).sin();
-                    let val_prev = ((2.0 * std::f64::consts::PI * (days_since - 1.0)) / period).sin();
+                for (period, name) in cycles {
+                    let val_now = (TAU * days_since / period).sin();
+                    let val_prev = (TAU * (days_since - 1.0) / period).sin();
 
                     if (val_now >= 0.0 && val_prev < 0.0) || (val_now <= 0.0 && val_prev > 0.0) {
                         active_crit.push(name);
@@ -223,15 +240,15 @@ impl BiorhythmApp {
             let list = items.into_iter().fold(column![].spacing(8), |col, (off, date, types)| {
                 let color = match types.len() {
                     3 => Color::from_rgb(1.0, 0.2, 0.2),
-                    2 => Color::from_rgb(1.0, 0.6, 0.0),
-                    _ => Color::from_rgb(0.7, 0.7, 0.7),
+                                              2 => Color::from_rgb(1.0, 0.6, 0.0),
+                                              _ => Color::from_rgb(0.7, 0.7, 0.7),
                 };
 
                 col.push(
                     button(
                         row![
                             text(date.format("%b %d").to_string()).size(14).width(60),
-                            text(types.join(" + ")).color(color).size(14).font(Font { weight: Weight::Bold, ..Font::DEFAULT }),
+                           text(types.join(" + ")).color(color).size(14).font(Font { weight: Weight::Bold, ..Font::DEFAULT }),
                         ].spacing(10)
                     )
                     .width(Length::Fill)
@@ -270,7 +287,6 @@ impl<Message> canvas::Program<Message> for BiorhythmApp {
                     let x = pad_l + (i as f32 / 30.0) * chart_w;
                     let cur_date = view_start + Duration::days(i as i64);
                     let is_target = cur_date == target_date;
-                    // Check if the current date in the loop is a Sunday
                     let is_sunday = cur_date.weekday() == Weekday::Sun;
 
                     let l_col = if is_target { Color::from_rgba(1.0, 1.0, 0.0, 0.8) } else { Color::from_rgba(1.0, 1.0, 1.0, 0.05) };
@@ -279,31 +295,29 @@ impl<Message> canvas::Program<Message> for BiorhythmApp {
                     if is_target || i % 5 == 0 {
                         frame.fill_text(Text {
                             content: cur_date.format("%d/%m").to_string(),
-                            position: Point::new(x, pad_t - 15.0),
-                            color: if is_target { Color::from_rgb(1.0, 1.0, 0.0) } else { Color::from_rgb(0.6, 0.6, 0.6) },
-                            size: 11.0.into(),
-                            horizontal_alignment: alignment::Horizontal::Center,
-                            ..Default::default()
+                                        position: Point::new(x, pad_t - 15.0),
+                                        color: if is_target { Color::from_rgb(1.0, 1.0, 0.0) } else { Color::from_rgb(0.6, 0.6, 0.6) },
+                                        size: 11.0.into(),
+                                        horizontal_alignment: alignment::Horizontal::Center,
+                                        ..Default::default()
                         });
                     }
-
 
                     let day_color = if is_target {
                         Color::from_rgb(1.0, 1.0, 0.0)
                     } else if is_sunday {
-                        Color::from_rgb(1.0, 0.5, 0.5) // Bright red for "Sun"
+                        Color::from_rgb(1.0, 0.5, 0.5)
                     } else {
                         Color::WHITE
                     };
 
                     frame.fill_text(Text {
                         content: cur_date.format("%a").to_string(),
-                        position: Point::new(x, pad_t + chart_h + 15.0),
-                        // color: if is_target { Color::from_rgb(1.0, 1.0, 0.0) } else { Color::WHITE },
-                        color: day_color,
-                        size: 11.0.into(),
-                        horizontal_alignment: alignment::Horizontal::Center,
-                        ..Default::default()
+                                    position: Point::new(x, pad_t + chart_h + 15.0),
+                                    color: day_color,
+                                    size: 11.0.into(),
+                                    horizontal_alignment: alignment::Horizontal::Center,
+                                    ..Default::default()
                     });
                 }
 
@@ -318,39 +332,58 @@ impl<Message> canvas::Program<Message> for BiorhythmApp {
 impl BiorhythmApp {
     fn draw_bars(&self, frame: &mut Frame, start: f64, pad: f32, w: f32, mid_y: f32, h: f32) {
         let spacing = w / 30.0;
+        let half_h = h / 2.0;
+
         for i in 0..30 {
             let d = i as f64;
-            let p = ((2.0 * std::f64::consts::PI * (start + d)) / 23.0).sin();
-            let e = ((2.0 * std::f64::consts::PI * (start + d)) / 28.0).sin();
-            let intel = ((2.0 * std::f64::consts::PI * (start + d)) / 33.0).sin();
+            let p = (TAU * (start + d) / 23.0).sin();
+            let e = (TAU * (start + d) / 28.0).sin();
+            let intel = (TAU * (start + d) / 33.0).sin();
             let avg = (p + e + intel) / 3.0;
 
-            let bar_h = (avg as f32 * (h / 2.0)).abs();
-            let color = if avg >= 0.0 { Color::from_rgba(0.2, 1.0, 0.5, 0.2) } else { Color::from_rgba(1.0, 0.3, 0.3, 0.2) };
+            let bar_h = (avg as f32 * half_h).abs();
+            let color = if avg >= 0.0 {
+                Color::from_rgba(0.2, 1.0, 0.5, 0.2)
+            } else {
+                Color::from_rgba(1.0, 0.3, 0.3, 0.2)
+            };
 
             frame.fill_rectangle(
                 Point::new(pad + (i as f32 * spacing) + (spacing * 0.1), if avg >= 0.0 { mid_y - bar_h } else { mid_y }),
-                Size::new(spacing * 0.8, bar_h),
-                color
+                                 Size::new(spacing * 0.8, bar_h),
+                                 color
             );
         }
     }
 
     fn draw_plot(&self, frame: &mut Frame, start: f64, pad: f32, w: f32, mid_y: f32, h: f32) {
-        let cycles = [(23.0, Color::from_rgb8(255, 80, 80)), (28.0, Color::from_rgb8(80, 255, 80)), (33.0, Color::from_rgb8(80, 80, 255))];
+        let cycles = [
+            (23.0, Color::from_rgb8(255, 80, 80)),
+            (28.0, Color::from_rgb8(80, 255, 80)),
+            (33.0, Color::from_rgb8(80, 80, 255))
+        ];
+        let half_h = h / 2.0;
+
         for (period, col) in cycles {
             let mut path = canvas::path::Builder::new();
+            let mut prev_val = (TAU * start / period).sin();
+
             for i in 0..=300 {
                 let d_off = (i as f64 / 300.0) * 30.0;
-                let val = ((2.0 * std::f64::consts::PI * (start + d_off)) / period).sin();
+                let val = (TAU * (start + d_off) / period).sin();
                 let x = pad + (i as f32 / 300.0) * w;
-                let y = mid_y - (val as f32 * (h / 2.0));
+                let y = mid_y - (val as f32 * half_h);
 
-                if val.abs() < 0.015 {
+                if i > 0 && ((val >= 0.0 && prev_val < 0.0) || (val <= 0.0 && prev_val > 0.0)) {
                     frame.fill_rectangle(Point::new(x - 3.0, mid_y - 3.0), Size::new(6.0, 6.0), Color::WHITE);
                 }
 
-                if i == 0 { path.move_to(Point::new(x, y)); } else { path.line_to(Point::new(x, y)); }
+                if i == 0 {
+                    path.move_to(Point::new(x, y));
+                } else {
+                    path.line_to(Point::new(x, y));
+                }
+                prev_val = val;
             }
             frame.stroke(&path.build(), Stroke::default().with_color(col).with_width(2.5));
         }
@@ -359,7 +392,11 @@ impl BiorhythmApp {
 
 impl Default for BiorhythmApp {
     fn default() -> Self {
-        let saved_entries = fs::read_to_string("entries.json").ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+        let saved_entries = fs::read_to_string(get_storage_path())
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+
         Self {
             name_input: String::new(),
             date_input: Utc::now().naive_utc().date().format("%Y-%m-%d").to_string(),
@@ -372,4 +409,3 @@ impl Default for BiorhythmApp {
         }
     }
 }
-
